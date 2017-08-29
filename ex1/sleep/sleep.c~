@@ -1,0 +1,20 @@
+#include <pthread.h>
+#include <stdio.h>
+
+void *sleep_print(void *x_void_ptr)
+{
+
+	printf("%d: start\n", pthread_self());
+	sleep(5);	
+	printf("%d: stopp\n", pthread_self());
+}
+
+int main()
+{
+	pthread_t t1, t2;
+	pthread_create(&t1, NULL, sleep_print, NULL);
+	pthread_create(&t2, NULL, sleep_print, NULL);
+	pthread_join(t1, NULL);
+	pthread_join(t2, NULL);
+	return 0;
+}
