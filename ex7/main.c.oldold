@@ -1,0 +1,123 @@
+#include <unistd.h>
+#include <semaphore.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+#include <native/timer.h>
+#include <sys/mman.h>
+#include <native/intr.h>
+#include <native/task.h>
+#include <native/sem.h>
+#include <native/mutex.h>
+
+#define US 1000
+#define MS 1000000
+#define SEC 1000000000
+
+// time unit = 0.5s
+#define TIME_UNIT 100
+
+RT_SEM sem_barrier;
+RT_MUTEX mut_a, mut_b;
+
+
+void busy_wait_ms(unsigned long delay) {
+	unsigned long count = 0;
+	while (count <= delay*10){
+		rt_timer_spin(1000*100);
+		count++;
+	}
+}
+
+int rt_task_sleep_ms(unsigned long delay){
+	return rt_task_sleep(1000*1000*delay);
+}
+
+/*
+The base and current priority of the running task is printed together
+with a provided message.
+*/
+void print_pri(RT_TASK *task, char *s)
+{
+	struct rt_task_info temp;
+	rt_task_inquire(task, &temp);
+	rt_printf("b:%i c:%i ", temp.bprio, temp.cprio);
+	rt_printf(s);
+}
+
+static void *low(void *var)
+{
+	rt_sem_p(&sem_barrier, TM_INFINITE);
+	rt_mutex_acquire(&mut_a, TM_INFINITE);
+	print_pri(rt_task_self(), "low got mutex a \n");
+	rt_task_set_priority(rt_task_self(), 10);
+	print_pri(rt_task_self(), "low prioirity ceiling \n");
+	busy_wait_ms(3*TIME_UNIT);
+	rt_mutex_acquire(&mut_b, TM_INFINITE);
+	busy_wait_ms(3*TIME_UNIT);
+	rt_mutex_release(&mut_b);
+	rt_mutex_release(&mut_a);
+	print_pri(rt_task_self(), "low released all mutexes \n");
+	rt_task_set_priority(NULL, 1);
+	print_pri(rt_task_self(), "low priority ceiling \n");
+	rt_task_sleep(1);
+	busy_wait_ms(1*TIME_UNIT);
+	rt_printf("low done\n");
+}
+
+static void *high(void *var)
+{
+	rt_sem_p(&sem_barrier, TM_INFINITE);
+
+	rt_task_sleep_ms(1*TIME_UNIT);
+	rt_mutex_acquire(&mut_b, TM_INFINITE);
+	print_pri(rt_task_self(), "high got mutex b \n");
+	rt_task_set_priority(NULL, 10);
+	print_pri(rt_task_self(), "high prioirity ceiling \n");
+	busy_wait_ms(1*TIME_UNIT);
+	rt_mutex_acquire(&mut_a, TM_INFINITE);
+	busy_wait_ms(2*TIME_UNIT);
+	rt_mutex_release(&mut_a);
+	rt_mutex_release(&mut_b);
+	print_pri(rt_task_self(), "high released all mutexes \n");
+	rt_task_set_priority(NULL, 2);
+	print_pri(rt_task_self(), "high priority ceiling \n");
+	rt_task_sleep(1);
+	busy_wait_ms(1*TIME_UNIT);
+	rt_printf("high done\n");
+}
+
+int main()
+{
+	mlockall(MCL_CURRENT|MCL_FUTURE);
+	rt_print_auto_init(1);
+	rt_sem_create(&sem_barrier, "sem_barrier", 0, S_PRIO);
+	rt_mutex_create(&mut_a, "mut_a");
+	rt_mutex_create(&mut_b, "mut_b");
+
+	RT_TASK t_low, t_high;
+	rt_task_create(&t_low, "task_low", 0, 1, T_CPU(0) | T_JOINABLE);
+	rt_task_create(&t_high, "task_high", 0, 2, T_CPU(0) | T_JOINABLE);
+	rt_task_start(&t_low, low, 1);
+	rt_task_start(&t_high, high, 2);
+
+	rt_task_shadow(NULL, "task_main", 5, T_CPU(0) | T_JOINABLE);
+
+	rt_task_sleep(100*MS);
+	rt_printf("main broadcast\n------------------\n\n");
+	rt_sem_broadcast(&sem_barrier);
+	rt_task_sleep(100*MS);
+
+	// rt_printf("waiting for join\n");
+	rt_task_join(&t_low);
+	rt_task_join(&t_high);
+
+	rt_printf("\ndeleting semaphores and mutexes\n");
+	rt_sem_delete(&sem_barrier);
+	rt_mutex_delete(&mut_a);
+	rt_mutex_delete(&mut_b);
+	return 0;
+}
